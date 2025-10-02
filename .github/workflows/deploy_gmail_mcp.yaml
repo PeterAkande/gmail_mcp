@@ -1,0 +1,460 @@
+name: Gmail MCP Server Deployment Pipeline
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Deployment environment'
+        required: true
+        default: 'prod'
+        type: choice
+        options:
+          - dev
+          - prod
+      server_host:
+        description: 'Server IP address (optional, uses environment-specific HOST secret by default)'
+        required: false
+      username:
+        description: 'SSH username (optional, uses environment-specific USERNAME secret by default)'
+        required: false
+      env_content:
+        description: '.env file content base64 encoded (optional, uses environment-specific ENV_CONTENT secret by default)'
+        required: false
+      email_for_ssl:
+        description: 'Email address to use for SSL certificate registration'
+        required: false
+      domain_name:
+        description: 'Domain name for SSL certificate (e.g., gmail-mcp.example.com)'
+        required: false
+  push:
+    branches: [ main ]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set deployment variables
+        id: vars
+        run: |
+          # Determine environment - default to 'prod' if triggered by push to main branch, should be default to 'dev' in real scenarios
+          if [[ "${{ github.event_name }}" == "push" && "${{ github.ref }}" == "refs/heads/main" ]]; then
+            ENVIRONMENT="prod" # Should be 'dev' in real scenarios
+          else
+            ENVIRONMENT="${{ github.event.inputs.environment || 'dev' }}"
+          fi
+          
+          echo "ENVIRONMENT=${ENVIRONMENT}" >> $GITHUB_OUTPUT
+          
+          # Set environment-specific variables
+          if [[ "${ENVIRONMENT}" == "prod" ]]; then
+            echo "HOST=${{ github.event.inputs.server_host || secrets.PROD_HOST }}" >> $GITHUB_OUTPUT
+            echo "USERNAME=${{ github.event.inputs.username || secrets.PROD_USERNAME }}" >> $GITHUB_OUTPUT
+            echo "ENV_CONTENT=${{ github.event.inputs.env_content || secrets.PROD_ENV_CONTENT }}" >> $GITHUB_OUTPUT
+            echo "EMAIL_SSL=${{ github.event.inputs.email_for_ssl || secrets.PROD_EMAIL_SSL }}" >> $GITHUB_OUTPUT
+            echo "DOMAIN_NAME=${{ github.event.inputs.domain_name || secrets.PROD_DOMAIN_NAME }}" >> $GITHUB_OUTPUT
+            {
+              echo "SSH_PRIVATE_KEY<<EOF"
+              echo "${{ secrets.PROD_SSH_PRIVATE_KEY }}"
+              echo "EOF"
+            } >> $GITHUB_OUTPUT
+          else
+            echo "HOST=${{ github.event.inputs.server_host || secrets.DEV_HOST }}" >> $GITHUB_OUTPUT
+            echo "USERNAME=${{ github.event.inputs.username || secrets.DEV_USERNAME }}" >> $GITHUB_OUTPUT
+            echo "ENV_CONTENT=${{ github.event.inputs.env_content || secrets.DEV_ENV_CONTENT }}" >> $GITHUB_OUTPUT
+            echo "EMAIL_SSL=${{ github.event.inputs.email_for_ssl || secrets.DEV_EMAIL_SSL }}" >> $GITHUB_OUTPUT
+            echo "DOMAIN_NAME=${{ github.event.inputs.domain_name || secrets.DEV_DOMAIN_NAME }}" >> $GITHUB_OUTPUT
+            {
+              echo "SSH_PRIVATE_KEY<<EOF"
+              echo "${{ secrets.DEV_SSH_PRIVATE_KEY }}"
+              echo "EOF"
+            } >> $GITHUB_OUTPUT
+          fi
+
+      - name: Display Deployment Info
+        run: |
+          echo "📧 Deploying Gmail MCP Server to: ${{ steps.vars.outputs.ENVIRONMENT }} environment"
+          echo "📍 Target Host: ${{ steps.vars.outputs.HOST }}"
+          echo "👤 SSH User: ${{ steps.vars.outputs.USERNAME }}"
+          if [ "${{ steps.vars.outputs.DOMAIN_NAME }}" != "" ]; then
+            echo "🌐 Domain: ${{ steps.vars.outputs.DOMAIN_NAME }}"
+          fi
+
+      - name: Setup SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ steps.vars.outputs.SSH_PRIVATE_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H ${{ steps.vars.outputs.HOST }} >> ~/.ssh/known_hosts
+
+      - name: Initial Server Setup
+        run: |
+          ssh -i ~/.ssh/deploy_key ${{ steps.vars.outputs.USERNAME }}@${{ steps.vars.outputs.HOST }} << 'ENDSSH'
+            # Update system packages
+            sudo apt-get update
+            sudo apt-get upgrade -y
+            
+            # Install required packages
+            sudo apt-get install -y nginx software-properties-common curl rsync
+            
+            # Install Python 3.13 (or 3.11+ as fallback)
+            sudo add-apt-repository -y ppa:deadsnakes/ppa
+            sudo apt-get update
+            
+            # Try Python 3.13 first, fallback to 3.11
+            if sudo apt-get install -y python3.13 python3.13-venv python3.13-dev python3-pip; then
+                PYTHON_VERSION="python3.13"
+                echo "✅ Python 3.13 installed"
+            else
+                sudo apt-get install -y python3.11 python3.11-venv python3.11-dev python3-pip
+                PYTHON_VERSION="python3.11"
+                echo "✅ Python 3.11 installed as fallback"
+            fi
+            
+            # Create application directory
+            mkdir -p ~/srv/gmail_mcp
+            cd ~/srv/gmail_mcp
+            
+            # Create virtual environment
+            $PYTHON_VERSION -m venv venv
+            source venv/bin/activate
+            
+            # Install uv for faster package management
+            pip install --upgrade pip setuptools wheel uv
+            
+            echo "✅ Initial server setup completed"
+          ENDSSH
+
+      - name: Deploy Application Code
+        run: |
+          # Debug: Show deployment variables
+          echo "Environment: ${{ steps.vars.outputs.ENVIRONMENT }}"
+          echo "HOST is set: ${{ steps.vars.outputs.HOST != '' }}"
+          echo "USERNAME is set: ${{ steps.vars.outputs.USERNAME != '' }}"
+          
+          # Check if required variables are set
+          if [ -z "${{ steps.vars.outputs.HOST }}" ] || [ -z "${{ steps.vars.outputs.USERNAME }}" ]; then
+            echo "❌ ERROR: HOST or USERNAME not set properly"
+            echo "HOST: '${{ steps.vars.outputs.HOST }}'"
+            echo "USERNAME: '${{ steps.vars.outputs.USERNAME }}'"
+            echo "Make sure you have the required secrets configured:"
+            if [ "${{ steps.vars.outputs.ENVIRONMENT }}" = "prod" ]; then
+              echo "- PROD_HOST, PROD_USERNAME, PROD_SSH_PRIVATE_KEY"
+            else
+              echo "- DEV_HOST, DEV_USERNAME, DEV_SSH_PRIVATE_KEY" 
+            fi
+            exit 1
+          fi
+          
+          # Verify SSH key file exists and has correct permissions
+          ls -la ~/.ssh/deploy_key
+          
+          # Test SSH connection first
+          echo "Testing SSH connection..."
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no -o ConnectTimeout=10 \
+            ${{ steps.vars.outputs.USERNAME }}@${{ steps.vars.outputs.HOST }} "echo 'SSH connection successful'"
+          
+          # Sync code to server (excluding sensitive files)
+          rsync -avz -e "ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no" \
+            --exclude '.env' \
+            --exclude '.git' \
+            --exclude '.github' \
+            --exclude '__pycache__' \
+            --exclude '*.pyc' \
+            --exclude 'venv' \
+            --exclude '.venv' \
+            --exclude 'logs/' \
+            --exclude 'service_example/' \
+            --exclude 'tests/' \
+            ./ ${{ steps.vars.outputs.USERNAME }}@${{ steps.vars.outputs.HOST }}:~/srv/gmail_mcp/src/
+
+      - name: Setup Environment and Install Dependencies
+        run: |
+          ssh -i ~/.ssh/deploy_key ${{ steps.vars.outputs.USERNAME }}@${{ steps.vars.outputs.HOST }} << 'ENDSSH'
+            cd ~/srv/gmail_mcp
+            
+            # Create .env file from secrets
+            if [ ! -z "${{ steps.vars.outputs.ENV_CONTENT }}" ]; then
+              echo "Creating .env file from provided content..."
+              echo "${{ steps.vars.outputs.ENV_CONTENT }}" | base64 -d > src/.env
+              echo "✅ .env file created successfully"
+            else
+              echo "⚠️  Warning: No ENV_CONTENT provided, creating basic .env"
+              cat > src/.env << 'EOF'
+          # Server Configuration
+          SERVER_HOST=0.0.0.0
+          SERVER_PORT=8312
+          SERVER_URL=http://localhost:8312
+          DEBUG=false
+          
+          # Transport Configuration
+          TRANSPORT_TYPE=streamble_http
+          MCP_SERVER_NAME=gmail_mcp_server
+          
+          # Logging Configuration
+          LOG_LEVEL=INFO
+          LOG_FORMAT=%(asctime)s - %(name)s - %(levelname)s - %(message)s
+          
+          # Gmail OAuth Configuration
+          # Note: These are automatically configured for Google OAuth validation
+          # GOOGLE_OAUTH_ISSUER=https://accounts.google.com
+          # REQUIRED_SCOPES=gmail.readonly,gmail.send,gmail.modify,gmail.compose,gmail.labels
+          EOF
+            fi
+            
+            # Install Python dependencies using uv
+            source venv/bin/activate
+            cd src
+            
+            # Install dependencies via uv (faster)
+            uv pip install -e .
+            uv pip install gunicorn uvicorn[standard]
+            
+            # Create necessary directories
+            mkdir -p logs
+            
+            echo "✅ Dependencies installed successfully"
+          ENDSSH
+
+      - name: Configure Systemd Service
+        run: |
+          ssh -i ~/.ssh/deploy_key ${{ steps.vars.outputs.USERNAME }}@${{ steps.vars.outputs.HOST }} << 'ENDSSH'
+            # Create Gmail MCP Server service
+            sudo tee /etc/systemd/system/gmail-mcp.service > /dev/null << 'EOF'
+          [Unit]
+          Description=Gmail MCP Server
+          After=network.target
+          
+          [Service]
+          User=${{ steps.vars.outputs.USERNAME }}
+          Group=sudo
+          WorkingDirectory=/home/${{ steps.vars.outputs.USERNAME }}/srv/gmail_mcp/src
+          Environment="PATH=/home/${{ steps.vars.outputs.USERNAME }}/srv/gmail_mcp/venv/bin"
+          Environment="PYTHONPATH=/home/${{ steps.vars.outputs.USERNAME }}/srv/gmail_mcp/src"
+          EnvironmentFile=/home/${{ steps.vars.outputs.USERNAME }}/srv/gmail_mcp/src/.env
+          ExecStart=/home/${{ steps.vars.outputs.USERNAME }}/srv/gmail_mcp/venv/bin/gunicorn -w 2 -k uvicorn.workers.UvicornWorker main:app --bind 0.0.0.0:8312 --timeout 120 --log-level info
+          Restart=always
+          RestartSec=5
+          StandardOutput=journal
+          StandardError=journal
+          
+          [Install]
+          WantedBy=multi-user.target
+          EOF
+            
+            echo "✅ Systemd service configured"
+          ENDSSH
+
+      - name: Configure Nginx
+        run: |
+          ssh -i ~/.ssh/deploy_key ${{ steps.vars.outputs.USERNAME }}@${{ steps.vars.outputs.HOST }} << 'ENDSSH'
+            # Create Nginx configuration for Gmail MCP Server
+            sudo tee /etc/nginx/sites-available/gmail-mcp.conf > /dev/null << 'EOF'
+          # WebSocket upgrade mapping
+          map $http_upgrade $connection_upgrade {
+              default upgrade;
+              '' close;
+          }
+          
+          server {
+              listen 80;
+              listen [::]:80;
+              server_name ${{ steps.vars.outputs.DOMAIN_NAME || '_' }};
+          
+              # Security headers
+              add_header X-Frame-Options "SAMEORIGIN" always;
+              add_header X-XSS-Protection "1; mode=block" always;
+              add_header X-Content-Type-Options "nosniff" always;
+              add_header Referrer-Policy "no-referrer-when-downgrade" always;
+          
+              # Client body size for file uploads and email attachments
+              client_max_body_size 25M;
+          
+              # Main proxy to MCP server
+              location / {
+                  proxy_pass http://127.0.0.1:8312;
+          
+                  # Headers for proper proxying
+                  proxy_set_header Host $host;
+                  proxy_set_header X-Real-IP $remote_addr;
+                  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                  proxy_set_header X-Forwarded-Proto $scheme;
+                  
+                  # Connection settings for WebSocket support
+                  proxy_http_version 1.1;
+                  proxy_set_header Connection $connection_upgrade;
+                  proxy_set_header Upgrade $http_upgrade;
+                  
+                  # Timeouts (increased for Gmail operations)
+                  proxy_connect_timeout 60s;
+                  proxy_send_timeout 120s;
+                  proxy_read_timeout 120s;
+              }
+          
+              # Error pages
+              error_page 502 503 504 /50x.html;
+              location = /50x.html {
+                  root /var/www/html;
+              }
+          }
+          EOF
+            
+            # Enable the site
+            sudo ln -sf /etc/nginx/sites-available/gmail-mcp.conf /etc/nginx/sites-enabled/
+            sudo rm -f /etc/nginx/sites-enabled/default
+            
+            # Test nginx configuration
+            sudo nginx -t
+            
+            echo "✅ Nginx configured successfully"
+          ENDSSH
+
+      - name: Setup SSL with Certbot
+        if: ${{ steps.vars.outputs.DOMAIN_NAME != '' && steps.vars.outputs.EMAIL_SSL != '' }}
+        run: |
+          ssh -i ~/.ssh/deploy_key ${{ steps.vars.outputs.USERNAME }}@${{ steps.vars.outputs.HOST }} << 'ENDSSH'
+            # Install Certbot
+            sudo apt-get install -y certbot python3-certbot-nginx
+            
+            # Check if SSL certificate already exists
+            if [ -d "/etc/letsencrypt/live/${{ steps.vars.outputs.DOMAIN_NAME }}" ]; then
+              echo "SSL certificate already exists for ${{ steps.vars.outputs.DOMAIN_NAME }}"
+            else
+              echo "Obtaining SSL certificate for ${{ steps.vars.outputs.DOMAIN_NAME }}"
+              
+              # Restart nginx to ensure it's running
+              sudo systemctl restart nginx
+              sleep 5
+              
+              # Get SSL certificate
+              sudo certbot --nginx \
+                --non-interactive \
+                --agree-tos \
+                --email ${{ steps.vars.outputs.EMAIL_SSL }} \
+                --domains ${{ steps.vars.outputs.DOMAIN_NAME }} \
+                --redirect
+              
+              # Setup auto-renewal
+              echo "0 12 * * * /usr/bin/certbot renew --quiet" | sudo crontab -
+              
+              echo "✅ SSL certificate configured successfully"
+            fi
+          ENDSSH
+
+      - name: Start Services
+        run: |
+          ssh -i ~/.ssh/deploy_key ${{ steps.vars.outputs.USERNAME }}@${{ steps.vars.outputs.HOST }} << 'ENDSSH'
+            # Enable and start services
+            sudo systemctl daemon-reload
+            sudo systemctl enable gmail-mcp.service
+            
+            # Restart services
+            sudo systemctl restart gmail-mcp.service
+            sudo systemctl restart nginx
+            
+            # Wait a moment for services to start
+            sleep 10
+            
+            # Check service status
+            echo "🔍 Checking service status..."
+            sudo systemctl is-active gmail-mcp.service
+            sudo systemctl is-active nginx
+            
+            echo "✅ All services started successfully"
+          ENDSSH
+
+      - name: Verify Deployment
+        run: |
+          ssh -i ~/.ssh/deploy_key ${{ steps.vars.outputs.USERNAME }}@${{ steps.vars.outputs.HOST }} << 'ENDSSH'
+            echo "🔍 Deployment Verification:"
+            echo "=========================="
+            
+            # Check if services are running
+            echo "Gmail MCP Service Status:"
+            sudo systemctl status gmail-mcp.service --no-pager -l | head -10
+            
+            echo -e "\nNginx Status:"
+            sudo systemctl status nginx --no-pager -l | head -5
+            
+            # Check if MCP server is responding
+            echo -e "\nMCP Server Health Check:"
+            if curl -f http://localhost:8312/health 2>/dev/null; then
+              echo "✅ MCP Server is responding on port 8312"
+            else
+              echo "❌ MCP Server is not responding on port 8312"
+              echo "Checking if server is running on configured port..."
+              netstat -tlnp | grep :8312 || echo "No process listening on port 8312"
+              
+              # Try alternative health check endpoints
+              echo "Trying alternative endpoints..."
+              curl -f http://localhost:8312/ 2>/dev/null && echo "✅ Root endpoint responding" || echo "❌ Root endpoint not responding"
+            fi
+            
+            # Show recent logs
+            echo -e "\nRecent MCP Server Logs:"
+            sudo journalctl -u gmail-mcp.service --no-pager -n 10
+
+          ENDSSH
+
+      - name: Cleanup
+        if: always()
+        run: |
+          rm -f ~/.ssh/deploy_key
+
+      - name: Deployment Summary
+        run: |
+          echo "📧 Gmail MCP Server Deployment Summary (${{ steps.vars.outputs.ENVIRONMENT }} Environment)"
+          echo "================================================================"
+          echo "🎯 Environment: ${{ steps.vars.outputs.ENVIRONMENT }}"
+          echo "✅ Server setup completed"
+          echo "✅ Application deployed to ~/srv/gmail_mcp"
+          echo "✅ MCP server service: gmail-mcp.service"
+          echo "✅ Nginx configured and running"
+          if [ "${{ steps.vars.outputs.DOMAIN_NAME }}" != "" ]; then
+            echo "✅ SSL certificate configured for ${{ steps.vars.outputs.DOMAIN_NAME }}"
+            echo "🌐 MCP Server available at: https://${{ steps.vars.outputs.DOMAIN_NAME }}"
+          else
+            echo "🌐 MCP Server available at: http://${{ steps.vars.outputs.HOST }}:8312"
+          fi
+          echo ""
+          echo "📋 Useful Commands:"
+          echo "• Check MCP server logs: sudo journalctl -u gmail-mcp.service -f"
+          echo "• Check Nginx logs: sudo tail -f /var/log/nginx/access.log"
+          echo "• Restart MCP server: sudo systemctl restart gmail-mcp.service"
+          echo "• Check service status: sudo systemctl status gmail-mcp.service"
+          echo "• Test MCP server directly: curl http://localhost:8312/health"
+          if [ "${{ steps.vars.outputs.DOMAIN_NAME }}" != "" ]; then
+            echo "• Test via Nginx: curl https://${{ steps.vars.outputs.DOMAIN_NAME }}/health"
+          fi
+          echo ""
+          echo "🔧 Configuration Files:"
+          echo "• MCP Server: ~/srv/gmail_mcp/src/.env"
+          echo "• Systemd Service: /etc/systemd/system/gmail-mcp.service"
+          echo "• Nginx Config: /etc/nginx/sites-available/gmail-mcp.conf"
+          echo ""
+          echo "📧 Gmail MCP Features:"
+          echo "• 25 Gmail tools available for email operations"
+          echo "• OAuth 2.0 authentication with Google"
+          echo "• Full email management (read, send, organize, search)"
+          echo "• Advanced features (drafts, threads, labels, forwarding)"
+          echo ""
+          echo "🔐 Required GitHub Secrets:"
+          echo "For DEV environment:"
+          echo "• DEV_HOST - Server IP address"
+          echo "• DEV_USERNAME - SSH username"
+          echo "• DEV_SSH_PRIVATE_KEY - SSH private key"
+          echo "• DEV_ENV_CONTENT - Base64 encoded .env file content"
+          echo "• DEV_EMAIL_SSL - Email for SSL certificate (optional)"
+          echo "• DEV_DOMAIN_NAME - Domain name (optional)"
+          echo ""
+          echo "For PROD environment:"
+          echo "• PROD_HOST - Server IP address"
+          echo "• PROD_USERNAME - SSH username"
+          echo "• PROD_SSH_PRIVATE_KEY - SSH private key"
+          echo "• PROD_ENV_CONTENT - Base64 encoded .env file content"
+          echo "• PROD_EMAIL_SSL - Email for SSL certificate (optional)"
+          echo "• PROD_DOMAIN_NAME - Domain name (optional)"
+          echo ""
+          echo "🎉 Gmail MCP Server deployment completed successfully!"
