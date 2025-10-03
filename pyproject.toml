@@ -5,7 +5,6 @@ description = "Production Gmail MCP Server with OAuth 2.0 support"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "fastmcp>=0.5.0",
     "fastapi>=0.104.0",
     "uvicorn[standard]>=0.24.0",
     "pydantic>=2.5.0",
@@ -19,6 +18,7 @@ dependencies = [
     "passlib[bcrypt]>=1.7.4",
     "python-dotenv>=1.0.0",
     "structlog>=23.2.0",
+    "mcp>=1.16.0",
 ]
 
 [project.optional-dependencies]
