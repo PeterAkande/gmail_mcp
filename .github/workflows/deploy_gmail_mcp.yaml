@@ -234,7 +234,7 @@ jobs:
           Environment="PATH=/home/${{ steps.vars.outputs.USERNAME }}/srv/gmail_mcp/venv/bin"
           Environment="PYTHONPATH=/home/${{ steps.vars.outputs.USERNAME }}/srv/gmail_mcp/src"
           EnvironmentFile=/home/${{ steps.vars.outputs.USERNAME }}/srv/gmail_mcp/src/.env
-          ExecStart=/home/${{ steps.vars.outputs.USERNAME }}/srv/gmail_mcp/venv/bin/gunicorn -w 2 -k uvicorn.workers.UvicornWorker main:app --bind 0.0.0.0:8312 --timeout 120 --log-level info
+          ExecStart=/home/USER/srv/gmail_mcp/venv/bin/gunicorn -w 1 -k uvicorn.workers.UvicornWorker main:app --bind 0.0.0.0:8312 --timeout 300 --keep-alive 5 --log-level debug --access-logfile - --error-logfile - 
           Restart=always
           RestartSec=5
           StandardOutput=journal
