@@ -1,6 +1,6 @@
 """MCP tools for email reading operations."""
 
-from typing import Optional, List
+from typing import Optional, List, Union
 import json
 import logging
 
@@ -10,7 +10,7 @@ from mcp.server.fastmcp.server import Context
 
 from ..services import GmailService
 from ..models import EmailListRequest, SearchEmailsRequest, MessageFormat
-from ..dependencies import get_access_token, get_gmail_service
+from ..dependencies import get_access_token, get_gmail_service, parse_comma_separated_list
 
 
 logger = logging.getLogger(__name__)
@@ -27,7 +27,7 @@ def register_reading_tools(mcp: FastMCP):
     async def gmail_get_emails(
         ctx: Context,
         max_results: int = 10,
-        label_ids: Optional[List[str]] = None,
+        label_ids: Optional[str] = None,
         query: Optional[str] = None,
         after_date: Optional[str] = None,
         before_date: Optional[str] = None,
@@ -41,7 +41,7 @@ def register_reading_tools(mcp: FastMCP):
 
         Args:
             max_results: Maximum number of emails to return (1-500)
-            label_ids: Filter by label IDs (e.g., ['INBOX', 'UNREAD'])
+            label_ids: Filter by label IDs (comma-separated string, e.g., 'INBOX,UNREAD')
             query: Gmail search query (e.g., 'from:example@gmail.com')
             after_date: Get emails after this date (YYYY-MM-DD or YYYY/MM/DD)
             before_date: Get emails before this date (YYYY-MM-DD or YYYY/MM/DD)
@@ -68,10 +68,13 @@ def register_reading_tools(mcp: FastMCP):
 
             # GmailService is injected with the access token already configured
 
+            # Parse comma-separated label_ids into list
+            label_ids_list = parse_comma_separated_list(label_ids) or []
+
             # Create request object
             email_request = EmailListRequest(
                 max_results=max_results,
-                label_ids=label_ids or [],
+                label_ids=label_ids_list,
                 query=query,
                 after_date=after_date,
                 before_date=before_date,
@@ -136,7 +139,7 @@ def register_reading_tools(mcp: FastMCP):
         ctx: Context,
         query: str,
         max_results: int = 10,
-        label_ids: Optional[List[str]] = None,
+        label_ids: Optional[str] = None,
         after_date: Optional[str] = None,
         before_date: Optional[str] = None,
         newer_than: Optional[str] = None,
@@ -150,7 +153,7 @@ def register_reading_tools(mcp: FastMCP):
         Args:
             query: Gmail search query (e.g., 'from:example@gmail.com subject:urgent')
             max_results: Maximum number of results (1-500)
-            label_ids: Filter by label IDs
+            label_ids: Filter by label IDs (comma-separated string)
             after_date: Search emails after this date (YYYY-MM-DD or YYYY/MM/DD)
             before_date: Search emails before this date (YYYY-MM-DD or YYYY/MM/DD)
             newer_than: Search emails newer than timeframe (e.g., '1d', '2w', '3m', '1y')
@@ -175,10 +178,13 @@ def register_reading_tools(mcp: FastMCP):
         try:
             logger.info(f"Searching emails with query: {query}, format: {format}")
 
+            # Parse comma-separated label_ids into list
+            label_ids_list = parse_comma_separated_list(label_ids) or []
+
             search_request = SearchEmailsRequest(
                 query=query,
                 max_results=max_results,
-                label_ids=label_ids or [],
+                label_ids=label_ids_list,
                 after_date=after_date,
                 before_date=before_date,
                 newer_than=newer_than,
@@ -217,7 +223,7 @@ def register_reading_tools(mcp: FastMCP):
 
             logger.info(f"Retrieved {len(labels)} labels")
 
-            return json.dumps([label.model_dump() for label in labels], default=str)
+            return json.dumps([label.model_dump() for label in labels.labels], default=str)
 
         except Exception as e:
             logger.error(f"Error getting labels: {e}")

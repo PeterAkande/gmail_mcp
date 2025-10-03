@@ -8,7 +8,7 @@ from mcp.server.fastmcp.server import Context
 
 from ..services import GmailService
 from ..models import ForwardEmailRequest, CreateDraftRequest, MessageFormat, ThreadListRequest
-from ..dependencies import get_access_token, get_gmail_service
+from ..dependencies import get_access_token, get_gmail_service, parse_comma_separated_list
 
 
 logger = logging.getLogger(__name__)
@@ -25,18 +25,18 @@ def register_advanced_tools(mcp: FastMCP):
     async def gmail_forward_email(
         ctx: Context,
         message_id: str,
-        to: List[str],
-        cc: Optional[List[str]] = None,
-        bcc: Optional[List[str]] = None,
+        to: str,
+        cc: Optional[str] = None,
+        bcc: Optional[str] = None,
         additional_message: Optional[str] = None,
     ) -> str:
         """Forward an email to other recipients.
 
         Args:
             message_id: ID of email to forward
-            to: List of recipient email addresses
-            cc: CC recipients
-            bcc: BCC recipients
+            to: Recipient email addresses (comma-separated string)
+            cc: CC recipients (comma-separated string)
+            bcc: BCC recipients (comma-separated string)
             additional_message: Additional message to include with forward
             ctx: MCP context for logging and progress
 
@@ -46,12 +46,16 @@ def register_advanced_tools(mcp: FastMCP):
         access_token: str = get_access_token(ctx)
         gmail_service: GmailService = get_gmail_service(access_token=access_token)
         try:
-            # Forward the email using the Gmail service
+            # Parse comma-separated strings into lists
+            to_list = parse_comma_separated_list(to)
+            cc_list = parse_comma_separated_list(cc)
+            bcc_list = parse_comma_separated_list(bcc)
 
+            # Forward the email using the Gmail service
             request = ForwardEmailRequest(
-                to=to,
-                cc=cc,
-                bcc=bcc,
+                to=to_list,
+                cc=cc_list,
+                bcc=bcc_list,
                 additional_message=additional_message,
             )
 
@@ -61,7 +65,7 @@ def register_advanced_tools(mcp: FastMCP):
                 "success": True,
                 "forwarded_message_id": forwarded_message_id,
                 "original_message_id": message_id,
-                "message": f"Email forwarded successfully to {', '.join(to)}",
+                "message": f"Email forwarded successfully to {', '.join(to_list) if to_list else 'recipients'}",
             }
 
             return json.dumps(result, indent=2)
@@ -125,7 +129,7 @@ def register_advanced_tools(mcp: FastMCP):
     async def gmail_get_threads(
         ctx: Context,
         max_results: int = 10,
-        label_ids: Optional[List[str]] = None,
+        label_ids: Optional[str] = None,
         query: Optional[str] = None,
         include_spam_trash: bool = False,
         page_token: Optional[str] = None,
@@ -136,7 +140,7 @@ def register_advanced_tools(mcp: FastMCP):
 
         Args:
             max_results: Maximum number of threads to return (1-500)
-            label_ids: Filter by label IDs
+            label_ids: Filter by label IDs (comma-separated string)
             query: Gmail search query
             include_spam_trash: Include spam and trash
             page_token: Token for pagination
@@ -151,10 +155,13 @@ def register_advanced_tools(mcp: FastMCP):
         gmail_service: GmailService = get_gmail_service(access_token=access_token)
         try:
             # GmailService is injected via dependency injection
+            
+            # Parse comma-separated label_ids into list
+            label_ids_list = parse_comma_separated_list(label_ids)
 
             request = ThreadListRequest(
                 max_results=max_results,
-                label_ids=label_ids,
+                label_ids=label_ids_list,
                 q=query,
                 include_spam_trash=include_spam_trash,
                 page_token=page_token,
@@ -213,24 +220,24 @@ def register_advanced_tools(mcp: FastMCP):
     @mcp.tool()
     async def gmail_create_draft(
         ctx: Context,
-        to: List[str],
+        to: str,
         subject: str,
         body_text: Optional[str] = None,
         body_html: Optional[str] = None,
-        cc: Optional[List[str]] = None,
-        bcc: Optional[List[str]] = None,
+        cc: Optional[str] = None,
+        bcc: Optional[str] = None,
         thread_id: Optional[str] = None,
         in_reply_to: Optional[str] = None,
     ) -> str:
         """Create a draft email.
 
         Args:
-            to: List of recipient email addresses
+            to: Recipient email addresses (comma-separated string)
             subject: Email subject
             body_text: Plain text body
             body_html: HTML body
-            cc: CC recipients
-            bcc: BCC recipients
+            cc: CC recipients (comma-separated string)
+            bcc: BCC recipients (comma-separated string)
             thread_id: Thread ID for replies
             in_reply_to: Message ID being replied to
             ctx: MCP context for logging and progress
@@ -244,15 +251,19 @@ def register_advanced_tools(mcp: FastMCP):
             if not body_text and not body_html:
                 return json.dumps({"error": "Either body_text or body_html must be provided"})
 
-            # GmailService is injected via dependency injection
+            # Parse comma-separated strings into lists
+            to_list = parse_comma_separated_list(to)
+            cc_list = parse_comma_separated_list(cc)
+            bcc_list = parse_comma_separated_list(bcc)
 
+            # GmailService is injected via dependency injection
             request = CreateDraftRequest(
-                to=to,
+                to=to_list,
                 subject=subject,
                 body_text=body_text,
                 body_html=body_html,
-                cc=cc,
-                bcc=bcc,
+                cc=cc_list,
+                bcc=bcc_list,
                 thread_id=thread_id,
                 in_reply_to=in_reply_to,
             )
@@ -262,7 +273,7 @@ def register_advanced_tools(mcp: FastMCP):
             result = {
                 "success": True,
                 "draft_id": draft_id,
-                "message": f"Draft created successfully for {', '.join(to)}",
+                "message": f"Draft created successfully for {', '.join(to_list) if to_list else 'recipients'}",
             }
 
             return json.dumps(result, indent=2)

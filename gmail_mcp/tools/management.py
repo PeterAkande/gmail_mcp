@@ -1,6 +1,6 @@
 """MCP tools for email sending and management operations."""
 
-from typing import Optional, List
+from typing import Optional, List, Union
 import json
 import logging
 
@@ -10,7 +10,7 @@ from mcp.server.fastmcp.server import Context
 
 from ..services import GmailService
 from ..models import SendEmailRequest, ModifyLabelsRequest, CreateLabelRequest
-from ..dependencies import get_access_token, get_gmail_service
+from ..dependencies import get_access_token, get_gmail_service, parse_comma_separated_list
 
 
 logger = logging.getLogger(__name__)
@@ -26,24 +26,24 @@ def register_management_tools(mcp: FastMCP):
     @mcp.tool()
     async def gmail_send_email(
         ctx: Context,
-        to: List[str],
+        to: str,
         subject: str,
         body_text: Optional[str] = None,
         body_html: Optional[str] = None,
-        cc: Optional[List[str]] = None,
-        bcc: Optional[List[str]] = None,
-        attachments: Optional[List[str]] = None,
+        cc: Optional[str] = None,
+        bcc: Optional[str] = None,
+        attachments: Optional[str] = None,
     ) -> str:
         """Send an email.
 
         Args:
-            to: List of recipient email addresses
+            to: Recipient email addresses (comma-separated string)
             subject: Email subject
             body_text: Plain text body
             body_html: HTML body
-            cc: CC recipients
-            bcc: BCC recipients
-            attachments: List of file paths to attach
+            cc: CC recipients (comma-separated string)
+            bcc: BCC recipients (comma-separated string)
+            attachments: File paths to attach (comma-separated string)
             ctx: MCP context for logging and progress
             gmail_service: GmailService instance (injected)
 
@@ -56,16 +56,22 @@ def register_management_tools(mcp: FastMCP):
             if not body_text and not body_html:
                 return json.dumps({"error": "Either body_text or body_html must be provided"})
 
+            # Parse comma-separated strings into lists
+            to_list = parse_comma_separated_list(to)
+            cc_list = parse_comma_separated_list(cc)
+            bcc_list = parse_comma_separated_list(bcc)
+            attachments_list = parse_comma_separated_list(attachments)
+
             # GmailService is configured with the access token
 
             request = SendEmailRequest(
-                to=to,
+                to=to_list,
                 subject=subject,
                 body_text=body_text,
                 body_html=body_html,
-                cc=cc,
-                bcc=bcc,
-                attachments=attachments,
+                cc=cc_list,
+                bcc=bcc_list,
+                attachments=attachments_list,
             )
 
             message_id = await gmail_service.send_message(request)
@@ -73,7 +79,7 @@ def register_management_tools(mcp: FastMCP):
             result = {
                 "success": True,
                 "message_id": message_id,
-                "message": f"Email sent successfully to {', '.join(to)}",
+                "message": f"Email sent successfully to {', '.join(to_list) if to_list else 'recipients'}",
             }
 
             return json.dumps(result, indent=2)
@@ -317,12 +323,12 @@ def register_management_tools(mcp: FastMCP):
             return json.dumps({"error": str(e), "success": False}, indent=2)
 
     @mcp.tool()
-    async def gmail_add_label(ctx: Context, message_id: str, label_ids: List[str]) -> str:
+    async def gmail_add_label(ctx: Context, message_id: str, label_ids: str) -> str:
         """Add labels to an email.
 
         Args:
             message_id: Message ID
-            label_ids: List of label IDs to add
+            label_ids: Label IDs to add (comma-separated string)
             ctx: MCP context for logging and progress
 
         Returns:
@@ -331,15 +337,17 @@ def register_management_tools(mcp: FastMCP):
         access_token: str = get_access_token(ctx)
         gmail_service: GmailService = get_gmail_service(access_token=access_token)
         try:
-            request = ModifyLabelsRequest(add_label_ids=label_ids)
+            # Parse comma-separated string into list
+            label_ids_list = parse_comma_separated_list(label_ids)
+            request = ModifyLabelsRequest(add_label_ids=label_ids_list)
             updated_message = await gmail_service.modify_message_labels(message_id, request)
 
             result = {
                 "success": True,
                 "message_id": message_id,
-                "added_labels": label_ids,
+                "added_labels": label_ids_list,
                 "current_labels": updated_message.label_ids,
-                "message": f"Labels {', '.join(label_ids)} added successfully",
+                "message": f"Labels {', '.join(label_ids_list) if label_ids_list else 'none'} added successfully",
             }
 
             return json.dumps(result, indent=2)
@@ -349,12 +357,12 @@ def register_management_tools(mcp: FastMCP):
             return json.dumps({"error": str(e), "success": False}, indent=2)
 
     @mcp.tool()
-    async def gmail_remove_label(ctx: Context, message_id: str, label_ids: List[str]) -> str:
+    async def gmail_remove_label(ctx: Context, message_id: str, label_ids: str) -> str:
         """Remove labels from an email.
 
         Args:
             message_id: Message ID
-            label_ids: List of label IDs to remove
+            label_ids: Label IDs to remove (comma-separated string)
             ctx: MCP context for logging and progress
 
         Returns:
@@ -363,15 +371,17 @@ def register_management_tools(mcp: FastMCP):
         access_token: str = get_access_token(ctx)
         gmail_service: GmailService = get_gmail_service(access_token=access_token)
         try:
-            request = ModifyLabelsRequest(remove_label_ids=label_ids)
+            # Parse comma-separated string into list
+            label_ids_list = parse_comma_separated_list(label_ids)
+            request = ModifyLabelsRequest(remove_label_ids=label_ids_list)
             updated_message = await gmail_service.modify_message_labels(message_id, request)
 
             result = {
                 "success": True,
                 "message_id": message_id,
-                "removed_labels": label_ids,
+                "removed_labels": label_ids_list,
                 "current_labels": updated_message.label_ids,
-                "message": f"Labels {', '.join(label_ids)} removed successfully",
+                "message": f"Labels {', '.join(label_ids_list) if label_ids_list else 'none'} removed successfully",
             }
 
             return json.dumps(result, indent=2)
