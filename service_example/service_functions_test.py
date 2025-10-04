@@ -766,12 +766,11 @@ async def run_tests():
     print("==================")
 
     # Get access token
-    # access_token = input("Enter your Gmail OAuth access token: ").strip()
-    # if not access_token:
-    #     print("❌ Access token is required!")
-    #     return
+    access_token = input("Enter your Gmail OAuth access token: ").strip()
+    if not access_token:
+        print("❌ Access token is required!")
+        return
 
-    access_token = "ya29.a0AQQ_BDTBoUVhqSf81vzRxPS6DW3TVJXJ9UPk8VaT9OpUArxPnbuleLmfphWAH8zCBXS2vM34S3OI_-Evb_gyPJI9uKPyZp77ElquZ2XD1hTsHY9_aB3zBBihbqy0uEifn0UDDez6kMgy6rv7g_Wll440cx412-H5jQV-ktHvVq3KiRAsMVRjRqjow3wMcKAKbuhoOWqeaCgYKARYSARESFQHGX2MilLQDFuzRGPM_qmY7l2ftlg0207"
 
     # Initialize tester
     try:
